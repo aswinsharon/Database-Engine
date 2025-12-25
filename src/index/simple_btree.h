@@ -55,33 +55,45 @@ public:
 
 private:
     struct LeafNode {
-        static constexpr int MAX_KEYS = 100;  // Simplified for now
+        static constexpr int MAX_KEYS = 10;  // Smaller for testing splits
         
         int num_keys;
         int keys[MAX_KEYS];
         RID values[MAX_KEYS];
         page_id_t next_leaf;
+        page_id_t parent;
         
-        LeafNode() : num_keys(0), next_leaf(INVALID_PAGE_ID) {}
+        LeafNode() : num_keys(0), next_leaf(INVALID_PAGE_ID), parent(INVALID_PAGE_ID) {}
         
         int FindKey(int key);
         bool Insert(int key, const RID& value);
         bool Remove(int key);
         bool IsFull() const { return num_keys >= MAX_KEYS; }
+        bool IsHalfFull() const { return num_keys >= MAX_KEYS / 2; }
+        
+        // Split operations
+        LeafNode* Split(page_id_t new_page_id);
+        int GetMiddleKey() const { return keys[MAX_KEYS / 2]; }
     };
 
     struct InternalNode {
-        static constexpr int MAX_KEYS = 100;  // Simplified for now
+        static constexpr int MAX_KEYS = 10;  // Smaller for testing splits
         
         int num_keys;
         int keys[MAX_KEYS];
         page_id_t children[MAX_KEYS + 1];
+        page_id_t parent;
         
-        InternalNode() : num_keys(0) {}
+        InternalNode() : num_keys(0), parent(INVALID_PAGE_ID) {}
         
         page_id_t FindChild(int key);
         bool Insert(int key, page_id_t child);
         bool IsFull() const { return num_keys >= MAX_KEYS; }
+        bool IsHalfFull() const { return num_keys >= MAX_KEYS / 2; }
+        
+        // Split operations
+        InternalNode* Split(page_id_t new_page_id);
+        int GetMiddleKey() const { return keys[MAX_KEYS / 2]; }
     };
 
     // Helper methods
@@ -93,6 +105,15 @@ private:
     
     LeafNode* FindLeafNode(int key);
     bool InsertIntoLeaf(LeafNode* leaf, int key, const RID& value);
+    
+    // Split and merge operations
+    void SplitLeafNode(LeafNode* leaf, page_id_t leaf_page_id);
+    void SplitInternalNode(InternalNode* internal, page_id_t internal_page_id);
+    void InsertIntoParent(page_id_t left_page_id, int key, page_id_t right_page_id);
+    void CreateNewRoot(page_id_t left_page_id, int key, page_id_t right_page_id);
+    
+    // Tree traversal
+    page_id_t FindLeafPageId(int key);
     
     BufferPoolManager* buffer_pool_manager_;
     page_id_t root_page_id_;
