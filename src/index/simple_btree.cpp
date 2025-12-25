@@ -22,14 +22,32 @@ bool SimpleBTree::Insert(int key, const RID& value) {
         return success;
     }
     
-    LeafNode* leaf = FindLeafNode(key);
+    page_id_t leaf_page_id = FindLeafPageId(key);
+    LeafNode* leaf = GetLeafNode(leaf_page_id);
     if (leaf == nullptr) {
         return false;
     }
     
-    bool success = InsertIntoLeaf(leaf, key, value);
-    buffer_pool_manager_->UnpinPage(leaf->next_leaf, success);  // Assuming we stored page_id in next_leaf temporarily
-    return success;
+    // Check if key already exists
+    int pos = leaf->FindKey(key);
+    if (pos < leaf->num_keys && leaf->keys[pos] == key) {
+        buffer_pool_manager_->UnpinPage(leaf_page_id, false);
+        return false; // Duplicate key
+    }
+    
+    // If leaf is not full, insert directly
+    if (!leaf->IsFull()) {
+        bool success = leaf->Insert(key, value);
+        buffer_pool_manager_->UnpinPage(leaf_page_id, success);
+        return success;
+    }
+    
+    // Leaf is full, need to split
+    SplitLeafNode(leaf, leaf_page_id);
+    buffer_pool_manager_->UnpinPage(leaf_page_id, true);
+    
+    // Retry insertion after split
+    return Insert(key, value);
 }
 
 bool SimpleBTree::Search(int key, RID* result) {
@@ -37,7 +55,8 @@ bool SimpleBTree::Search(int key, RID* result) {
         return false;
     }
     
-    LeafNode* leaf = FindLeafNode(key);
+    page_id_t leaf_page_id = FindLeafPageId(key);
+    LeafNode* leaf = GetLeafNode(leaf_page_id);
     if (leaf == nullptr) {
         return false;
     }
@@ -49,7 +68,7 @@ bool SimpleBTree::Search(int key, RID* result) {
         *result = leaf->values[index];
     }
     
-    buffer_pool_manager_->UnpinPage(root_page_id_, false);  // Simplified - should track actual page
+    buffer_pool_manager_->UnpinPage(leaf_page_id, false);
     return found;
 }
 
@@ -119,27 +138,174 @@ page_id_t SimpleBTree::CreateInternalPage() {
 }
 
 SimpleBTree::LeafNode* SimpleBTree::FindLeafNode(int key) {
+    page_id_t leaf_page_id = FindLeafPageId(key);
+    return GetLeafNode(leaf_page_id);
+}
+
+page_id_t SimpleBTree::FindLeafPageId(int key) {
     if (IsEmpty()) {
-        return nullptr;
+        return INVALID_PAGE_ID;
     }
     
-    if (is_root_leaf_) {
-        return GetLeafNode(root_page_id_);
+    page_id_t current_page_id = root_page_id_;
+    
+    while (!is_root_leaf_ || current_page_id != root_page_id_) {
+        // Check if current page is a leaf
+        Page* page = buffer_pool_manager_->FetchPage(current_page_id);
+        if (page == nullptr) {
+            return INVALID_PAGE_ID;
+        }
+        
+        // For simplicity, assume we can determine node type
+        // In a real implementation, you'd store node type in page header
+        if (current_page_id == root_page_id_ && is_root_leaf_) {
+            buffer_pool_manager_->UnpinPage(current_page_id, false);
+            return current_page_id;
+        }
+        
+        // Treat as internal node
+        InternalNode* internal = reinterpret_cast<InternalNode*>(page->GetDataArea());
+        page_id_t child_page_id = internal->FindChild(key);
+        buffer_pool_manager_->UnpinPage(current_page_id, false);
+        
+        current_page_id = child_page_id;
+        
+        // Check if we've reached a leaf (simplified check)
+        Page* child_page = buffer_pool_manager_->FetchPage(child_page_id);
+        if (child_page == nullptr) {
+            return INVALID_PAGE_ID;
+        }
+        
+        // For now, assume all non-root pages at depth 1 are leaves
+        // This is a simplification - in practice you'd track node types
+        buffer_pool_manager_->UnpinPage(child_page_id, false);
+        return child_page_id;
     }
     
-    // For now, assume single level (root is always leaf)
-    // TODO: Implement multi-level traversal
-    return GetLeafNode(root_page_id_);
+    return root_page_id_;
 }
 
 bool SimpleBTree::InsertIntoLeaf(LeafNode* leaf, int key, const RID& value) {
     if (leaf->IsFull()) {
-        // TODO: Implement split logic
-        std::cerr << "Leaf node is full - split not implemented yet" << std::endl;
-        return false;
+        return false; // Should be handled by split logic
     }
     
     return leaf->Insert(key, value);
+}
+
+void SimpleBTree::SplitLeafNode(LeafNode* leaf, page_id_t leaf_page_id) {
+    // Create new leaf node
+    page_id_t new_leaf_page_id = CreateLeafPage();
+    LeafNode* new_leaf = GetLeafNode(new_leaf_page_id);
+    
+    // Calculate split point
+    int split_point = LeafNode::MAX_KEYS / 2;
+    
+    // Move half the keys to new leaf
+    for (int i = split_point; i < leaf->num_keys; ++i) {
+        new_leaf->keys[i - split_point] = leaf->keys[i];
+        new_leaf->values[i - split_point] = leaf->values[i];
+    }
+    new_leaf->num_keys = leaf->num_keys - split_point;
+    leaf->num_keys = split_point;
+    
+    // Update leaf pointers
+    new_leaf->next_leaf = leaf->next_leaf;
+    leaf->next_leaf = new_leaf_page_id;
+    new_leaf->parent = leaf->parent;
+    
+    // Get the key to promote to parent
+    int promote_key = new_leaf->keys[0];
+    
+    buffer_pool_manager_->UnpinPage(new_leaf_page_id, true);
+    
+    // Insert into parent or create new root
+    if (leaf->parent == INVALID_PAGE_ID) {
+        // This is root, create new root
+        CreateNewRoot(leaf_page_id, promote_key, new_leaf_page_id);
+    } else {
+        InsertIntoParent(leaf_page_id, promote_key, new_leaf_page_id);
+    }
+}
+
+void SimpleBTree::SplitInternalNode(InternalNode* internal, page_id_t internal_page_id) {
+    // Create new internal node
+    page_id_t new_internal_page_id = CreateInternalPage();
+    InternalNode* new_internal = GetInternalNode(new_internal_page_id);
+    
+    // Calculate split point
+    int split_point = InternalNode::MAX_KEYS / 2;
+    int promote_key = internal->keys[split_point];
+    
+    // Move keys and children to new internal node
+    for (int i = split_point + 1; i < internal->num_keys; ++i) {
+        new_internal->keys[i - split_point - 1] = internal->keys[i];
+    }
+    for (int i = split_point + 1; i <= internal->num_keys; ++i) {
+        new_internal->children[i - split_point - 1] = internal->children[i];
+    }
+    
+    new_internal->num_keys = internal->num_keys - split_point - 1;
+    internal->num_keys = split_point;
+    new_internal->parent = internal->parent;
+    
+    buffer_pool_manager_->UnpinPage(new_internal_page_id, true);
+    
+    // Insert into parent or create new root
+    if (internal->parent == INVALID_PAGE_ID) {
+        CreateNewRoot(internal_page_id, promote_key, new_internal_page_id);
+    } else {
+        InsertIntoParent(internal_page_id, promote_key, new_internal_page_id);
+    }
+}
+
+void SimpleBTree::InsertIntoParent(page_id_t left_page_id, int key, page_id_t right_page_id) {
+    // Get parent page
+    LeafNode* left_leaf = GetLeafNode(left_page_id);
+    page_id_t parent_page_id = left_leaf->parent;
+    buffer_pool_manager_->UnpinPage(left_page_id, false);
+    
+    InternalNode* parent = GetInternalNode(parent_page_id);
+    
+    if (!parent->IsFull()) {
+        // Insert directly into parent
+        parent->Insert(key, right_page_id);
+        buffer_pool_manager_->UnpinPage(parent_page_id, true);
+    } else {
+        // Parent is full, need to split
+        SplitInternalNode(parent, parent_page_id);
+        buffer_pool_manager_->UnpinPage(parent_page_id, true);
+        
+        // Retry insertion
+        InsertIntoParent(left_page_id, key, right_page_id);
+    }
+}
+
+void SimpleBTree::CreateNewRoot(page_id_t left_page_id, int key, page_id_t right_page_id) {
+    // Create new root as internal node
+    page_id_t new_root_page_id = CreateInternalPage();
+    InternalNode* new_root = GetInternalNode(new_root_page_id);
+    
+    // Set up new root
+    new_root->keys[0] = key;
+    new_root->children[0] = left_page_id;
+    new_root->children[1] = right_page_id;
+    new_root->num_keys = 1;
+    
+    // Update child parent pointers
+    LeafNode* left_child = GetLeafNode(left_page_id);
+    left_child->parent = new_root_page_id;
+    buffer_pool_manager_->UnpinPage(left_page_id, true);
+    
+    LeafNode* right_child = GetLeafNode(right_page_id);
+    right_child->parent = new_root_page_id;
+    buffer_pool_manager_->UnpinPage(right_page_id, true);
+    
+    // Update tree metadata
+    root_page_id_ = new_root_page_id;
+    is_root_leaf_ = false;
+    
+    buffer_pool_manager_->UnpinPage(new_root_page_id, true);
 }
 
 void SimpleBTree::PrintTree() {
