@@ -5,6 +5,12 @@
 
 namespace minidb {
 
+/**
+ * Constructor for Tuple with values and schema
+ * @param values Vector of Value objects representing the tuple data
+ * @param schema Pointer to the Schema that defines the structure
+ * @throws std::runtime_error if value count doesn't match schema column count
+ */
 Tuple::Tuple(std::vector<Value> values, const Schema* schema)
     : values_(std::move(values)), schema_(schema) {
     
@@ -13,8 +19,17 @@ Tuple::Tuple(std::vector<Value> values, const Schema* schema)
     }
 }
 
+/**
+ * Copy constructor for Tuple
+ * @param other The tuple to copy from
+ */
 Tuple::Tuple(const Tuple& other) : values_(other.values_), schema_(other.schema_) {}
 
+/**
+ * Copy assignment operator for Tuple
+ * @param other The tuple to copy from
+ * @return Reference to this tuple
+ */
 Tuple& Tuple::operator=(const Tuple& other) {
     if (this != &other) {
         values_ = other.values_;
@@ -23,11 +38,20 @@ Tuple& Tuple::operator=(const Tuple& other) {
     return *this;
 }
 
+/**
+ * Move constructor for Tuple
+ * @param other The tuple to move from
+ */
 Tuple::Tuple(Tuple&& other) noexcept 
     : values_(std::move(other.values_)), schema_(other.schema_) {
     other.schema_ = nullptr;
 }
 
+/**
+ * Move assignment operator for Tuple
+ * @param other The tuple to move from
+ * @return Reference to this tuple
+ */
 Tuple& Tuple::operator=(Tuple&& other) noexcept {
     if (this != &other) {
         values_ = std::move(other.values_);
@@ -37,16 +61,36 @@ Tuple& Tuple::operator=(Tuple&& other) noexcept {
     return *this;
 }
 
+/**
+ * Get a value from the tuple by column index
+ * @param col_idx Zero-based column index
+ * @return Reference to the Value at the specified column
+ * @throws std::out_of_range if col_idx is invalid
+ * @throws std::runtime_error if tuple is not valid
+ */
 const Value& Tuple::GetValue(uint32_t col_idx) const {
     ValidateColumnIndex(col_idx);
     return values_[col_idx];
 }
 
+/**
+ * Set a value in the tuple at the specified column index
+ * @param col_idx Zero-based column index
+ * @param value The new Value to set
+ * @throws std::out_of_range if col_idx is invalid
+ * @throws std::runtime_error if tuple is not valid
+ */
 void Tuple::SetValue(uint32_t col_idx, const Value& value) {
     ValidateColumnIndex(col_idx);
     values_[col_idx] = value;
 }
 
+/**
+ * Serialize the tuple to a byte buffer
+ * Writes tuple header (size + flags) followed by serialized values
+ * @param storage Buffer to write the serialized data (must be large enough)
+ * @throws std::runtime_error if tuple is not valid
+ */
 void Tuple::SerializeTo(char* storage) const {
     if (!IsValid()) {
         throw std::runtime_error("Cannot serialize invalid tuple");
@@ -69,6 +113,12 @@ void Tuple::SerializeTo(char* storage) const {
     }
 }
 
+/**
+ * Deserialize a tuple from a byte buffer
+ * Reads tuple header and then deserializes values according to schema
+ * @param storage Buffer containing the serialized tuple data
+ * @param schema Pointer to the Schema for interpreting the data
+ */
 void Tuple::DeserializeFrom(const char* storage, const Schema* schema) {
     schema_ = schema;
     uint32_t offset = 0;
@@ -79,6 +129,10 @@ void Tuple::DeserializeFrom(const char* storage, const Schema* schema) {
     
     uint32_t flags = *reinterpret_cast<const uint32_t*>(storage + offset);
     offset += sizeof(uint32_t);
+    
+    // Suppress unused variable warnings (these may be used in future versions)
+    (void)tuple_size;
+    (void)flags;
     
     // Read values
     values_.clear();
@@ -91,6 +145,10 @@ void Tuple::DeserializeFrom(const char* storage, const Schema* schema) {
     }
 }
 
+/**
+ * Calculate the size needed to serialize this tuple
+ * @return Size in bytes required for serialization
+ */
 uint32_t Tuple::GetSerializedSize() const {
     if (!IsValid()) {
         return 0;
@@ -105,6 +163,10 @@ uint32_t Tuple::GetSerializedSize() const {
     return size;
 }
 
+/**
+ * Generate a string representation of the tuple
+ * @return Human-readable string in format "(value1, value2, ...)"
+ */
 std::string Tuple::ToString() const {
     if (!IsValid()) {
         return "Invalid Tuple";
@@ -122,6 +184,11 @@ std::string Tuple::ToString() const {
     return oss.str();
 }
 
+/**
+ * Equality comparison operator for tuples
+ * @param other The tuple to compare with
+ * @return true if tuples have same schema and all values are equal
+ */
 bool Tuple::operator==(const Tuple& other) const {
     if (schema_ != other.schema_ || values_.size() != other.values_.size()) {
         return false;
@@ -136,6 +203,12 @@ bool Tuple::operator==(const Tuple& other) const {
     return true;
 }
 
+/**
+ * Validate that a column index is within valid range
+ * @param col_idx The column index to validate
+ * @throws std::runtime_error if tuple is not valid
+ * @throws std::out_of_range if col_idx is out of range
+ */
 void Tuple::ValidateColumnIndex(uint32_t col_idx) const {
     if (!IsValid()) {
         throw std::runtime_error("Tuple is not valid");
@@ -147,14 +220,30 @@ void Tuple::ValidateColumnIndex(uint32_t col_idx) const {
 }
 
 // TupleIterator implementation
+
+/**
+ * Constructor for TupleIterator
+ * @param data Pointer to the page data containing tuples
+ * @param schema Pointer to the Schema for interpreting tuple data
+ * @param offset Starting offset within the page data
+ */
 TupleIterator::TupleIterator(const char* data, const Schema* schema, uint32_t offset)
     : data_(data), schema_(schema), current_offset_(offset), start_offset_(offset) {}
 
+/**
+ * Check if there are more tuples to iterate over
+ * @return true if more tuples are available, false otherwise
+ */
 bool TupleIterator::HasNext() const {
     // Simple implementation - in a real system, we'd check page boundaries
     return current_offset_ < PAGE_DATA_SIZE;
 }
 
+/**
+ * Get the next tuple from the iterator
+ * @return The next Tuple object
+ * @throws std::runtime_error if no more tuples are available
+ */
 Tuple TupleIterator::GetNext() {
     if (!HasNext()) {
         throw std::runtime_error("No more tuples");
@@ -168,6 +257,10 @@ Tuple TupleIterator::GetNext() {
     return tuple;
 }
 
+/**
+ * Reset the iterator to the beginning
+ * Sets the current position back to the starting offset
+ */
 void TupleIterator::Reset() {
     current_offset_ = start_offset_;
 }

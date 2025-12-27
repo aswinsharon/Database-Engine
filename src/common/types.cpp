@@ -4,6 +4,11 @@
 
 namespace minidb {
 
+/**
+ * Equality comparison operator for Value objects
+ * @param other The Value to compare with
+ * @return true if both values have the same type and equal data
+ */
 bool Value::operator==(const Value& other) const {
     if (type_ != other.type_) {
         return false;
@@ -22,6 +27,12 @@ bool Value::operator==(const Value& other) const {
     return false;
 }
 
+/**
+ * Less-than comparison operator for Value objects
+ * Used for sorting and indexing operations
+ * @param other The Value to compare with
+ * @return true if this value is less than the other value
+ */
 bool Value::operator<(const Value& other) const {
     if (type_ != other.type_) {
         return type_ < other.type_;
@@ -40,14 +51,25 @@ bool Value::operator<(const Value& other) const {
     return false;
 }
 
+/**
+ * Greater-than comparison operator for Value objects
+ * @param other The Value to compare with
+ * @return true if this value is greater than the other value
+ */
 bool Value::operator>(const Value& other) const {
     return other < *this;
 }
 
+/**
+ * Serialize the Value to a byte buffer
+ * Writes the type followed by the actual data
+ * @param data Buffer to write the serialized data
+ * @return Number of bytes written
+ */
 uint32_t Value::SerializeTo(char* data) const {
     uint32_t offset = 0;
     
-    // Write type
+    // Write type identifier first
     *reinterpret_cast<Type*>(data + offset) = type_;
     offset += sizeof(Type);
     
@@ -57,6 +79,7 @@ uint32_t Value::SerializeTo(char* data) const {
             offset += sizeof(int32_t);
             break;
         case VARCHAR: {
+            // Write string length followed by string data
             uint32_t str_len = static_cast<uint32_t>(str_val_.length());
             *reinterpret_cast<uint32_t*>(data + offset) = str_len;
             offset += sizeof(uint32_t);
@@ -69,17 +92,23 @@ uint32_t Value::SerializeTo(char* data) const {
             offset += sizeof(bool);
             break;
         case NULL_TYPE:
-            // No additional data for NULL
+            // No additional data for NULL values
             break;
     }
     
     return offset;
 }
 
+/**
+ * Deserialize a Value from a byte buffer
+ * Reads the type and then the corresponding data
+ * @param data Buffer containing the serialized Value data
+ * @return Number of bytes read
+ */
 uint32_t Value::DeserializeFrom(const char* data) {
     uint32_t offset = 0;
     
-    // Read type
+    // Read type identifier first
     type_ = *reinterpret_cast<const Type*>(data + offset);
     offset += sizeof(Type);
     
@@ -89,6 +118,7 @@ uint32_t Value::DeserializeFrom(const char* data) {
             offset += sizeof(int32_t);
             break;
         case VARCHAR: {
+            // Read string length followed by string data
             uint32_t str_len = *reinterpret_cast<const uint32_t*>(data + offset);
             offset += sizeof(uint32_t);
             str_val_ = std::string(data + offset, str_len);
@@ -100,15 +130,19 @@ uint32_t Value::DeserializeFrom(const char* data) {
             offset += sizeof(bool);
             break;
         case NULL_TYPE:
-            // No additional data for NULL
+            // No additional data for NULL values
             break;
     }
     
     return offset;
 }
 
+/**
+ * Calculate the size needed to serialize this Value
+ * @return Size in bytes required for serialization
+ */
 uint32_t Value::GetSerializedSize() const {
-    uint32_t size = sizeof(Type);
+    uint32_t size = sizeof(Type);  // Always need space for type identifier
     
     switch (type_) {
         case INTEGER:
@@ -121,13 +155,17 @@ uint32_t Value::GetSerializedSize() const {
             size += sizeof(bool);
             break;
         case NULL_TYPE:
-            // No additional data for NULL
+            // No additional data for NULL values
             break;
     }
     
     return size;
 }
 
+/**
+ * Generate a string representation of the Value
+ * @return Human-readable string representation of the value
+ */
 std::string Value::ToString() const {
     switch (type_) {
         case INTEGER:
