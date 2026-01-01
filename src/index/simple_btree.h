@@ -52,6 +52,31 @@ public:
     bool Remove(int key);
 
     /**
+     * Range scan: find all keys in the range [start_key, end_key]
+     * @param start_key The starting key (inclusive)
+     * @param end_key The ending key (inclusive)
+     * @param results Vector to store the found RID values
+     * @return Number of keys found in the range
+     */
+    int RangeScan(int start_key, int end_key, std::vector<RID>& results);
+
+    /**
+     * Get all keys greater than or equal to the given key
+     * @param start_key The starting key (inclusive)
+     * @param results Vector to store the found RID values
+     * @return Number of keys found
+     */
+    int ScanFrom(int start_key, std::vector<RID>& results);
+
+    /**
+     * Get the first N keys in the tree (useful for LIMIT queries)
+     * @param limit Maximum number of keys to return
+     * @param results Vector to store the found RID values
+     * @return Number of keys found
+     */
+    int GetFirst(int limit, std::vector<RID>& results);
+
+    /**
      * Check if the B+ tree is empty
      * @return true if tree has no elements, false otherwise
      */
@@ -96,6 +121,29 @@ private:
          * @return true if removal successful, false if key not found
          */
         bool Remove(int key);
+
+        /**
+         * Merge this leaf node with its right sibling
+         * @param right_sibling Pointer to the right sibling leaf node
+         * @return true if merge was successful
+         */
+        bool MergeWithRight(LeafNode* right_sibling);
+
+        /**
+         * Borrow a key from the right sibling
+         * @param right_sibling Pointer to the right sibling leaf node
+         * @param parent_key_idx Index of the separator key in parent
+         * @return true if borrowing was successful
+         */
+        bool BorrowFromRight(LeafNode* right_sibling, int parent_key_idx);
+
+        /**
+         * Borrow a key from the left sibling
+         * @param left_sibling Pointer to the left sibling leaf node
+         * @param parent_key_idx Index of the separator key in parent
+         * @return true if borrowing was successful
+         */
+        bool BorrowFromLeft(LeafNode* left_sibling, int parent_key_idx);
         
         /**
          * Check if the leaf node is at maximum capacity
@@ -147,6 +195,39 @@ private:
          * @return true if insertion successful, false if node is full
          */
         bool Insert(int key, page_id_t child);
+
+        /**
+         * Remove a key from this internal node
+         * @param key The key to remove
+         * @return true if removal successful, false if key not found
+         */
+        bool Remove(int key);
+
+        /**
+         * Merge this internal node with its right sibling
+         * @param right_sibling Pointer to the right sibling internal node
+         * @param separator_key The key that separates this node from its sibling
+         * @return true if merge was successful
+         */
+        bool MergeWithRight(InternalNode* right_sibling, int separator_key);
+
+        /**
+         * Borrow a key from the right sibling
+         * @param right_sibling Pointer to the right sibling internal node
+         * @param parent_key_idx Index of the separator key in parent
+         * @param separator_key The current separator key
+         * @return true if borrowing was successful
+         */
+        bool BorrowFromRight(InternalNode* right_sibling, int parent_key_idx, int separator_key);
+
+        /**
+         * Borrow a key from the left sibling
+         * @param left_sibling Pointer to the left sibling internal node
+         * @param parent_key_idx Index of the separator key in parent
+         * @param separator_key The current separator key
+         * @return true if borrowing was successful
+         */
+        bool BorrowFromLeft(InternalNode* left_sibling, int parent_key_idx, int separator_key);
         
         /**
          * Check if the internal node is at maximum capacity
@@ -247,6 +328,29 @@ private:
      * @param right_page_id Page ID of the right child of new root
      */
     void CreateNewRoot(page_id_t left_page_id, int key, page_id_t right_page_id);
+
+    // Rebalancing operations
+    /**
+     * Handle underflow in a leaf node after deletion
+     * @param leaf Pointer to the underflowing leaf node
+     * @param leaf_page_id Page ID of the leaf node
+     * @return true if rebalancing was successful
+     */
+    bool RebalanceLeaf(LeafNode* leaf, page_id_t leaf_page_id);
+
+    /**
+     * Handle underflow in an internal node after deletion
+     * @param internal Pointer to the underflowing internal node
+     * @param internal_page_id Page ID of the internal node
+     * @return true if rebalancing was successful
+     */
+    bool RebalanceInternal(InternalNode* internal, page_id_t internal_page_id);
+
+    /**
+     * Find the leftmost leaf node in the tree
+     * @return Page ID of the leftmost leaf, or INVALID_PAGE_ID if tree is empty
+     */
+    page_id_t FindLeftmostLeaf();
     
     // Tree traversal
     /**
