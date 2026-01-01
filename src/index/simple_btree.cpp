@@ -519,3 +519,486 @@ bool SimpleBTree::InternalNode::Insert(int key, page_id_t child) {
 }
 
 }  // namespace minidb
+// Range scan implementation
+int SimpleBTree::RangeScan(int start_key, int end_key, std::vector<RID>& results) {
+    results.clear();
+    
+    if (IsEmpty() || start_key > end_key) {
+        return 0;
+    }
+    
+    // Find the leftmost leaf that might contain start_key
+    page_id_t leaf_page_id = FindLeafPageId(start_key);
+    LeafNode* leaf = GetLeafNode(leaf_page_id);
+    if (leaf == nullptr) {
+        return 0;
+    }
+    
+    int count = 0;
+    
+    // Traverse leaf nodes using the linked list
+    while (leaf_page_id != INVALID_PAGE_ID) {
+        // Find starting position in current leaf
+        int start_pos = 0;
+        if (leaf_page_id == FindLeafPageId(start_key)) {
+            start_pos = leaf->FindKey(start_key);
+        }
+        
+        // Collect keys in range from current leaf
+        for (int i = start_pos; i < leaf->num_keys; i++) {
+            if (leaf->keys[i] > end_key) {
+                buffer_pool_manager_->UnpinPage(leaf_page_id, false);
+                return count;
+            }
+            
+            if (leaf->keys[i] >= start_key) {
+                results.push_back(leaf->values[i]);
+                count++;
+            }
+        }
+        
+        // Move to next leaf
+        page_id_t next_page_id = leaf->next_leaf;
+        buffer_pool_manager_->UnpinPage(leaf_page_id, false);
+        
+        if (next_page_id == INVALID_PAGE_ID) {
+            break;
+        }
+        
+        leaf_page_id = next_page_id;
+        leaf = GetLeafNode(leaf_page_id);
+        if (leaf == nullptr) {
+            break;
+        }
+    }
+    
+    return count;
+}
+
+int SimpleBTree::ScanFrom(int start_key, std::vector<RID>& results) {
+    results.clear();
+    
+    if (IsEmpty()) {
+        return 0;
+    }
+    
+    // Find the leftmost leaf that might contain start_key
+    page_id_t leaf_page_id = FindLeafPageId(start_key);
+    LeafNode* leaf = GetLeafNode(leaf_page_id);
+    if (leaf == nullptr) {
+        return 0;
+    }
+    
+    int count = 0;
+    
+    // Traverse leaf nodes using the linked list
+    while (leaf_page_id != INVALID_PAGE_ID) {
+        // Find starting position in current leaf
+        int start_pos = 0;
+        if (leaf_page_id == FindLeafPageId(start_key)) {
+            start_pos = leaf->FindKey(start_key);
+        }
+        
+        // Collect all keys from start_pos onwards
+        for (int i = start_pos; i < leaf->num_keys; i++) {
+            if (leaf->keys[i] >= start_key) {
+                results.push_back(leaf->values[i]);
+                count++;
+            }
+        }
+        
+        // Move to next leaf
+        page_id_t next_page_id = leaf->next_leaf;
+        buffer_pool_manager_->UnpinPage(leaf_page_id, false);
+        
+        if (next_page_id == INVALID_PAGE_ID) {
+            break;
+        }
+        
+        leaf_page_id = next_page_id;
+        leaf = GetLeafNode(leaf_page_id);
+        if (leaf == nullptr) {
+            break;
+        }
+    }
+    
+    return count;
+}
+
+int SimpleBTree::GetFirst(int limit, std::vector<RID>& results) {
+    results.clear();
+    
+    if (IsEmpty() || limit <= 0) {
+        return 0;
+    }
+    
+    // Find leftmost leaf
+    page_id_t leaf_page_id = FindLeftmostLeaf();
+    if (leaf_page_id == INVALID_PAGE_ID) {
+        return 0;
+    }
+    
+    LeafNode* leaf = GetLeafNode(leaf_page_id);
+    if (leaf == nullptr) {
+        return 0;
+    }
+    
+    int count = 0;
+    
+    // Traverse leaf nodes and collect first 'limit' keys
+    while (leaf_page_id != INVALID_PAGE_ID && count < limit) {
+        for (int i = 0; i < leaf->num_keys && count < limit; i++) {
+            results.push_back(leaf->values[i]);
+            count++;
+        }
+        
+        // Move to next leaf
+        page_id_t next_page_id = leaf->next_leaf;
+        buffer_pool_manager_->UnpinPage(leaf_page_id, false);
+        
+        if (next_page_id == INVALID_PAGE_ID || count >= limit) {
+            break;
+        }
+        
+        leaf_page_id = next_page_id;
+        leaf = GetLeafNode(leaf_page_id);
+        if (leaf == nullptr) {
+            break;
+        }
+    }
+    
+    return count;
+}
+
+page_id_t SimpleBTree::FindLeftmostLeaf() {
+    if (IsEmpty()) {
+        return INVALID_PAGE_ID;
+    }
+    
+    page_id_t current_page_id = root_page_id_;
+    
+    // If root is leaf, return it
+    if (is_root_leaf_) {
+        return current_page_id;
+    }
+    
+    // Traverse down to leftmost leaf
+    while (current_page_id != INVALID_PAGE_ID) {
+        InternalNode* internal = GetInternalNode(current_page_id);
+        if (internal == nullptr) {
+            return INVALID_PAGE_ID;
+        }
+        
+        page_id_t leftmost_child = internal->children[0];
+        buffer_pool_manager_->UnpinPage(current_page_id, false);
+        
+        // Check if this child is a leaf
+        LeafNode* potential_leaf = GetLeafNode(leftmost_child);
+        if (potential_leaf != nullptr) {
+            buffer_pool_manager_->UnpinPage(leftmost_child, false);
+            return leftmost_child;
+        }
+        
+        current_page_id = leftmost_child;
+    }
+    
+    return INVALID_PAGE_ID;
+}
+
+// Enhanced rebalancing for leaf nodes
+bool SimpleBTree::RebalanceLeaf(LeafNode* leaf, page_id_t leaf_page_id) {
+    if (leaf->IsHalfFull()) {
+        return true; // No rebalancing needed
+    }
+    
+    // If this is the root and it's empty, tree becomes empty
+    if (leaf_page_id == root_page_id_ && leaf->num_keys == 0) {
+        root_page_id_ = INVALID_PAGE_ID;
+        is_root_leaf_ = true;
+        return true;
+    }
+    
+    // Try to borrow from siblings or merge
+    if (leaf->parent != INVALID_PAGE_ID) {
+        InternalNode* parent = GetInternalNode(leaf->parent);
+        if (parent == nullptr) {
+            return false;
+        }
+        
+        // Find this leaf's position in parent
+        int child_idx = -1;
+        for (int i = 0; i <= parent->num_keys; i++) {
+            if (parent->children[i] == leaf_page_id) {
+                child_idx = i;
+                break;
+            }
+        }
+        
+        if (child_idx == -1) {
+            buffer_pool_manager_->UnpinPage(leaf->parent, false);
+            return false;
+        }
+        
+        // Try borrowing from right sibling
+        if (child_idx < parent->num_keys) {
+            page_id_t right_sibling_id = parent->children[child_idx + 1];
+            LeafNode* right_sibling = GetLeafNode(right_sibling_id);
+            
+            if (right_sibling != nullptr && right_sibling->num_keys > LeafNode::MAX_KEYS / 2) {
+                bool success = leaf->BorrowFromRight(right_sibling, child_idx);
+                buffer_pool_manager_->UnpinPage(right_sibling_id, success);
+                buffer_pool_manager_->UnpinPage(leaf->parent, success);
+                return success;
+            }
+            
+            if (right_sibling != nullptr) {
+                buffer_pool_manager_->UnpinPage(right_sibling_id, false);
+            }
+        }
+        
+        // Try borrowing from left sibling
+        if (child_idx > 0) {
+            page_id_t left_sibling_id = parent->children[child_idx - 1];
+            LeafNode* left_sibling = GetLeafNode(left_sibling_id);
+            
+            if (left_sibling != nullptr && left_sibling->num_keys > LeafNode::MAX_KEYS / 2) {
+                bool success = leaf->BorrowFromLeft(left_sibling, child_idx - 1);
+                buffer_pool_manager_->UnpinPage(left_sibling_id, success);
+                buffer_pool_manager_->UnpinPage(leaf->parent, success);
+                return success;
+            }
+            
+            if (left_sibling != nullptr) {
+                buffer_pool_manager_->UnpinPage(left_sibling_id, false);
+            }
+        }
+        
+        // Merge with right sibling
+        if (child_idx < parent->num_keys) {
+            page_id_t right_sibling_id = parent->children[child_idx + 1];
+            LeafNode* right_sibling = GetLeafNode(right_sibling_id);
+            
+            if (right_sibling != nullptr) {
+                bool success = leaf->MergeWithRight(right_sibling);
+                if (success) {
+                    // Remove separator key from parent
+                    parent->Remove(parent->keys[child_idx]);
+                    // Update parent's child pointer
+                    for (int i = child_idx + 1; i < parent->num_keys; i++) {
+                        parent->children[i] = parent->children[i + 1];
+                    }
+                }
+                buffer_pool_manager_->UnpinPage(right_sibling_id, success);
+                buffer_pool_manager_->UnpinPage(leaf->parent, success);
+                
+                // Recursively rebalance parent if needed
+                if (success && !parent->IsHalfFull()) {
+                    RebalanceInternal(parent, leaf->parent);
+                }
+                
+                return success;
+            }
+        }
+        
+        buffer_pool_manager_->UnpinPage(leaf->parent, false);
+    }
+    
+    return false;
+}
+
+bool SimpleBTree::RebalanceInternal(InternalNode* internal, page_id_t internal_page_id) {
+    if (internal->IsHalfFull()) {
+        return true; // No rebalancing needed
+    }
+    
+    // If this is the root and has only one child, make that child the new root
+    if (internal_page_id == root_page_id_ && internal->num_keys == 0) {
+        if (internal->children[0] != INVALID_PAGE_ID) {
+            root_page_id_ = internal->children[0];
+            
+            // Check if new root is a leaf
+            LeafNode* new_root_leaf = GetLeafNode(root_page_id_);
+            if (new_root_leaf != nullptr) {
+                new_root_leaf->parent = INVALID_PAGE_ID;
+                is_root_leaf_ = true;
+                buffer_pool_manager_->UnpinPage(root_page_id_, true);
+            } else {
+                InternalNode* new_root_internal = GetInternalNode(root_page_id_);
+                if (new_root_internal != nullptr) {
+                    new_root_internal->parent = INVALID_PAGE_ID;
+                    is_root_leaf_ = false;
+                    buffer_pool_manager_->UnpinPage(root_page_id_, true);
+                }
+            }
+        } else {
+            root_page_id_ = INVALID_PAGE_ID;
+            is_root_leaf_ = true;
+        }
+        return true;
+    }
+    
+    // Similar rebalancing logic for internal nodes...
+    // (Implementation similar to leaf rebalancing but with separator key handling)
+    
+    return true;
+}
+
+// LeafNode method implementations
+bool SimpleBTree::LeafNode::MergeWithRight(LeafNode* right_sibling) {
+    if (num_keys + right_sibling->num_keys > MAX_KEYS) {
+        return false; // Cannot merge - would exceed capacity
+    }
+    
+    // Copy all keys and values from right sibling
+    for (int i = 0; i < right_sibling->num_keys; i++) {
+        keys[num_keys + i] = right_sibling->keys[i];
+        values[num_keys + i] = right_sibling->values[i];
+    }
+    
+    num_keys += right_sibling->num_keys;
+    
+    // Update next pointer to skip the merged sibling
+    next_leaf = right_sibling->next_leaf;
+    
+    // Clear the right sibling
+    right_sibling->num_keys = 0;
+    
+    return true;
+}
+
+bool SimpleBTree::LeafNode::BorrowFromRight(LeafNode* right_sibling, int parent_key_idx) {
+    if (right_sibling->num_keys <= MAX_KEYS / 2) {
+        return false; // Right sibling doesn't have enough keys to lend
+    }
+    
+    // Take the first key from right sibling
+    keys[num_keys] = right_sibling->keys[0];
+    values[num_keys] = right_sibling->values[0];
+    num_keys++;
+    
+    // Shift keys in right sibling
+    for (int i = 0; i < right_sibling->num_keys - 1; i++) {
+        right_sibling->keys[i] = right_sibling->keys[i + 1];
+        right_sibling->values[i] = right_sibling->values[i + 1];
+    }
+    right_sibling->num_keys--;
+    
+    // Note: Parent key update should be handled by caller
+    return true;
+}
+
+bool SimpleBTree::LeafNode::BorrowFromLeft(LeafNode* left_sibling, int parent_key_idx) {
+    if (left_sibling->num_keys <= MAX_KEYS / 2) {
+        return false; // Left sibling doesn't have enough keys to lend
+    }
+    
+    // Shift current keys to make room
+    for (int i = num_keys; i > 0; i--) {
+        keys[i] = keys[i - 1];
+        values[i] = values[i - 1];
+    }
+    
+    // Take the last key from left sibling
+    keys[0] = left_sibling->keys[left_sibling->num_keys - 1];
+    values[0] = left_sibling->values[left_sibling->num_keys - 1];
+    num_keys++;
+    left_sibling->num_keys--;
+    
+    // Note: Parent key update should be handled by caller
+    return true;
+}
+
+// InternalNode method implementations
+bool SimpleBTree::InternalNode::Remove(int key) {
+    int pos = 0;
+    while (pos < num_keys && keys[pos] < key) {
+        pos++;
+    }
+    
+    if (pos >= num_keys || keys[pos] != key) {
+        return false; // Key not found
+    }
+    
+    // Shift keys and children
+    for (int i = pos; i < num_keys - 1; i++) {
+        keys[i] = keys[i + 1];
+        children[i + 1] = children[i + 2];
+    }
+    
+    num_keys--;
+    return true;
+}
+
+bool SimpleBTree::InternalNode::MergeWithRight(InternalNode* right_sibling, int separator_key) {
+    if (num_keys + 1 + right_sibling->num_keys > MAX_KEYS) {
+        return false; // Cannot merge - would exceed capacity
+    }
+    
+    // Add separator key
+    keys[num_keys] = separator_key;
+    num_keys++;
+    
+    // Copy all keys and children from right sibling
+    for (int i = 0; i < right_sibling->num_keys; i++) {
+        keys[num_keys + i] = right_sibling->keys[i];
+        children[num_keys + i] = right_sibling->children[i];
+    }
+    children[num_keys + right_sibling->num_keys] = right_sibling->children[right_sibling->num_keys];
+    
+    num_keys += right_sibling->num_keys;
+    
+    // Clear the right sibling
+    right_sibling->num_keys = 0;
+    
+    return true;
+}
+
+bool SimpleBTree::InternalNode::BorrowFromRight(InternalNode* right_sibling, int parent_key_idx, int separator_key) {
+    if (right_sibling->num_keys <= MAX_KEYS / 2) {
+        return false; // Right sibling doesn't have enough keys to lend
+    }
+    
+    // Add separator key and first child from right sibling
+    keys[num_keys] = separator_key;
+    children[num_keys + 1] = right_sibling->children[0];
+    num_keys++;
+    
+    // Update separator key in parent (should be done by caller)
+    // The new separator is the first key of right sibling
+    
+    // Shift keys and children in right sibling
+    for (int i = 0; i < right_sibling->num_keys - 1; i++) {
+        right_sibling->keys[i] = right_sibling->keys[i + 1];
+        right_sibling->children[i] = right_sibling->children[i + 1];
+    }
+    right_sibling->children[right_sibling->num_keys - 1] = right_sibling->children[right_sibling->num_keys];
+    right_sibling->num_keys--;
+    
+    return true;
+}
+
+bool SimpleBTree::InternalNode::BorrowFromLeft(InternalNode* left_sibling, int parent_key_idx, int separator_key) {
+    if (left_sibling->num_keys <= MAX_KEYS / 2) {
+        return false; // Left sibling doesn't have enough keys to lend
+    }
+    
+    // Shift current keys and children to make room
+    for (int i = num_keys; i > 0; i--) {
+        keys[i] = keys[i - 1];
+        children[i + 1] = children[i];
+    }
+    children[1] = children[0];
+    
+    // Add separator key and last child from left sibling
+    keys[0] = separator_key;
+    children[0] = left_sibling->children[left_sibling->num_keys];
+    num_keys++;
+    
+    // Update separator key in parent (should be done by caller)
+    // The new separator is the last key of left sibling
+    
+    left_sibling->num_keys--;
+    
+    return true;
+}
+} // namespace minidb

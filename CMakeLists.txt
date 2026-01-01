@@ -26,6 +26,9 @@ target_link_libraries(minidb_example minidb)
 add_executable(simple_btree_test examples/simple_btree_test.cpp)
 target_link_libraries(simple_btree_test minidb)
 
+add_executable(database_demo examples/database_demo.cpp)
+target_link_libraries(database_demo minidb)
+
 # Tests (if we add them later)
 option(BUILD_TESTS "Build tests" OFF)
 if(BUILD_TESTS)
